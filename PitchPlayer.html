@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pitch and Volume Control</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: black;
+        }
+
+        #circleCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+    </style>
+</head>
+<body>
+
+    <canvas id="circleCanvas"></canvas>
+
+    <script>
+        window.addEventListener('DOMContentLoaded', () => {
+            const context = new AudioContext();
+            let oscillator = null;
+            let gainNode = null;
+
+            // Set initial values
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const maxVolume = 1;
+            const maxPitch = 2400; // Equivalent to 2 octaves
+
+            const canvas = document.getElementById('circleCanvas');
+            canvas.width = screenWidth;
+            canvas.height = screenHeight;
+
+            // Calculate pitch and volume based on mouse position
+            function calculatePitchAndVolume(event) {
+                const x = event.clientX;
+                const y = event.clientY;
+
+                const volume = ((screenHeight - y) / screenHeight) * maxVolume;
+                const pitch = (x / screenWidth) * maxPitch;
+
+                gainNode.gain.value = volume;
+                oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200); // Base frequency of C4 is 261.63 Hz
+
+                drawCircle(x, y, volume);
+            }
+
+            // Draw a circle on the canvas
+            // Draw a circle on the canvas with dynamic background color
+            function drawCircle(x, y, volume) {
+                const ctx = canvas.getContext('2d');
+
+                const circleSize = volume * 50; // Adjust the circle size based on the volume
+                const circleX = x;
+                const circleY = y;
+
+                // Calculate the RGB values based on the x position
+                const red = Math.floor((x / screenWidth) * 255);
+                const green = Math.floor((1 - Math.abs(x - screenWidth / 2) / (screenWidth / 2)) * 255);
+                const blue = Math.floor((1 - x / screenWidth) * 255);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.beginPath();
+                ctx.arc(circleX, circleY, circleSize, 0, 2 * Math.PI);
+
+                // Set the background color using RGB values
+                ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+
+                ctx.fill(); // Fill the circle with the background color
+            }
+
+            // Start playing sound
+            function startSound(event) {
+                if (oscillator) return; // Sound already playing
+
+                oscillator = context.createOscillator();
+                gainNode = context.createGain();
+
+                oscillator.connect(gainNode);
+                gainNode.connect(context.destination);
+
+                calculatePitchAndVolume(event);
+
+                oscillator.start();
+            }
+
+            // Stop playing sound
+            function stopSound() {
+                if (!oscillator) return; // Sound already stopped
+
+                oscillator.stop();
+                oscillator.disconnect();
+                gainNode.disconnect();
+
+                oscillator = null;
+                gainNode = null;
+
+                clearCircle();
+            }
+
+            // Clear the circle from the canvas
+            function clearCircle() {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Event listeners for mouse events
+            window.addEventListener('mousedown', startSound);
+            window.addEventListener('mouseup', stopSound);
+            window.addEventListener('mousemove', calculatePitchAndVolume);
+            window.addEventListener('mouseleave', stopSound);
+        });
+    </script>
+</body>
+</html>
