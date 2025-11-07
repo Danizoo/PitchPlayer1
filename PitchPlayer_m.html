@@ -54,7 +54,7 @@
 
             if (!gainNode || !oscillator) return;
 
-            const volume = ((screenWidth - x) / screenWidth) * maxVolume;
+            const volume = ((screenWidth - (screenWidth - x)) / screenWidth) * maxVolume;
             const pitch = (y / screenHeight) * maxPitch;
 
             gainNode.gain.value = volume;
