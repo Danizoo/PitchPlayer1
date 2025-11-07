@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pitch and Volume Control</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: black;
+            touch-action: none;
+            overflow: hidden;
+            font-family: sans-serif;
+            color: white;
+        }
+        #menuBar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 50px;
+            background-color: #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            box-sizing: border-box;
+            z-index: 2;
+            user-select: none;
+        }
+        #toggleButton {
+            background-color: #444;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        #toggleButton:hover { background-color: #666; }
+        #circleCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+    </style>
+</head>
+<body>
+
+<div id="menuBar">
+    <div>🎵 Pitch & Volume Control</div>
+    <button id="toggleButton">Mode: Linear</button>
+</div>
+
+<canvas id="circleCanvas"></canvas>
+
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+    const context = new (window.AudioContext || window.webkitAudioContext)();
+    let oscillator = null;
+    let gainNode = null;
+    let isLogMode = false;
+
+    const baseFreq = 261.63;            // C4
+    const totalCents = 2400;            // 2 octaves
+    const menuBarHeight = 50;
+    const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+
+    // Logarithmic curve exponent: >1 compresses top (higher pitch) toward bottom.
+    // Increase to compress more; set close to 1 for almost-linear.
+    const logCurve = 2.5;
+
+    const canvas = document.getElementById('circleCanvas');
+    const ctx = canvas.getContext('2d');
+    const toggleButton = document.getElementById('toggleButton');
+
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        drawSemitoneLines();
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // y -> frequency
+function yToFrequency(y) {
+    const usableHeight = canvas.height - menuBarHeight;
+    let rel = (y - menuBarHeight) / usableHeight;
+    rel = Math.max(0, Math.min(1, rel));
+
+    if (!isLogMode) {
+        // LINEAR in pitch: linear in cents (log2 of frequency)
+        const topCents = totalCents;       // total cents from base to top
+        const cents = rel * topCents;
+        return baseFreq * Math.pow(2, cents / 1200);
+    } else {
+        // LOGARITHMIC: compress spacing toward bottom
+        const normalized = 1 - Math.pow(1 - rel, 1 / logCurve);
+        const cents = normalized * totalCents;
+        return baseFreq * Math.pow(2, cents / 1200);
+    }
+}
+
+// frequency -> y
+function frequencyToY(frequency) {
+    const usableHeight = canvas.height - menuBarHeight;
+    const cents = 1200 * Math.log2(frequency / baseFreq);
+
+    if (!isLogMode) {
+        // LINEAR in pitch
+        const rel = cents / totalCents;
+        return menuBarHeight + rel * usableHeight;
+    } else {
+        // LOGARITHMIC: inverse curve
+        const normalized = cents / totalCents;
+        const rel = 1 - Math.pow(1 - normalized, logCurve);
+        return menuBarHeight + rel * usableHeight;
+    }
+}
+
+    function drawSemitoneLines() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.fillStyle = "white";
+        ctx.lineWidth = 1;
+        ctx.font = "12px sans-serif";
+
+        const semitoneCount = totalCents / 100; // 24 semitones for 2 octaves
+        for (let i = 0; i <= semitoneCount; i++) {
+            const freq = baseFreq * Math.pow(2, i / 12); // i semitones above base
+            const y = frequencyToY(freq);
+
+            // Draw line
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.stroke();
+
+            // Label note name (wrap note names across octaves)
+            const noteName = noteNames[i % 12];
+            ctx.fillText(noteName, 8, y - 4);
+        }
+    }
+
+    function drawCircle(x, y, volume) {
+        // draw last over the lines
+        const circleSize = Math.max(6, volume * 50);
+        const red = Math.floor((x / canvas.width) * 255);
+        const green = Math.floor((1 - Math.abs(x - canvas.width / 2) / (canvas.width / 2)) * 255);
+        const blue = Math.floor((1 - x / canvas.width) * 255);
+
+        ctx.beginPath();
+        ctx.arc(x, y, circleSize, 0, Math.PI * 2);
+        ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+        ctx.fill();
+    }
+
+    function calculatePitchAndVolume(event) {
+        let x, y;
+        if (event.type && event.type.startsWith('touch')) {
+            const touch = event.touches[0] || event.changedTouches[0];
+            x = touch.clientX;
+            y = touch.clientY;
+        } else {
+            x = event.clientX;
+            y = event.clientY;
+        }
+
+        // Ignore interactions on the menu bar
+        if (y < menuBarHeight) return;
+
+        if (!gainNode || !oscillator) return;
+
+        const volume = Math.max(0, Math.min(1, x / canvas.width));
+        const frequency = yToFrequency(y);
+
+        gainNode.gain.value = volume;
+        oscillator.frequency.value = frequency;
+
+        drawSemitoneLines();
+        drawCircle(x, y, volume);
+    }
+
+    function startSound(event) {
+        // prevent starting from menu
+        let y = event.touches ? (event.touches[0]?.clientY || 0) : event.clientY;
+        if (y < menuBarHeight) return;
+
+        if (oscillator) return;
+        oscillator = context.createOscillator();
+        gainNode = context.createGain();
+        oscillator.type = 'sine';
+        oscillator.connect(gainNode);
+        gainNode.connect(context.destination);
+
+        calculatePitchAndVolume(event);
+        oscillator.start();
+    }
+
+    function stopSound() {
+        if (!oscillator) return;
+        oscillator.stop();
+        oscillator.disconnect();
+        gainNode.disconnect();
+        oscillator = null;
+        gainNode = null;
+        drawSemitoneLines();
+    }
+
+    // Event listeners (mouse + touch)
+    window.addEventListener('mousedown', startSound);
+    window.addEventListener('mouseup', stopSound);
+    window.addEventListener('mousemove', calculatePitchAndVolume);
+    window.addEventListener('mouseleave', stopSound);
+
+    window.addEventListener('touchstart', startSound, { passive: false });
+    window.addEventListener('touchmove', calculatePitchAndVolume, { passive: false });
+    window.addEventListener('touchend', stopSound);
+    window.addEventListener('touchcancel', stopSound);
+
+    // Toggle button
+    toggleButton.addEventListener('click', () => {
+        isLogMode = !isLogMode;
+        toggleButton.textContent = `Mode: ${isLogMode ? 'Logarithmic' : 'Linear'}`;
+        drawSemitoneLines();
+    });
+
+    // initial draw
+    drawSemitoneLines();
+
+    // Expose a quick way to tweak compression from console if you want:
+    window.setLogCurve = (v) => { if (v > 0) { console.log('logCurve set to', v); window.logCurve = v; } };
+});
+</script>
+</body>
+</html>
