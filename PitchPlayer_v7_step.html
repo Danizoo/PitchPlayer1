@@ -166,14 +166,25 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   function updateTouch(touch) {
-    const { identifier, clientX: x, clientY: y } = touch;
+    const { identifier, clientX: x } = touch;
+    let { clientY: y } = touch;
     if (y < menuBarHeight) return;
 
     const touchObj = activeTouches[identifier];
     if (!touchObj) return;
 
     const volume = Math.max(0, Math.min(1, x / canvas.width));
-    const frequency = yToFrequency(y);
+    let frequency = yToFrequency(y);
+
+    // --- If stepped mode: snap to nearest semitone (and visually snap Y) ---
+    if (isSteppedMode) {
+      // compute the nearest semitone frequency relative to base
+      const cents = 1200 * Math.log2(frequency / baseFreq);
+      const snappedCents = Math.round(cents / 100) * 100;
+      frequency = baseFreq * Math.pow(2, snappedCents / 1200);
+      // visually move Y to that exact semitone line
+      y = frequencyToY(frequency);
+    }
 
     touchObj.gain.gain.value = volume;
     touchObj.osc.frequency.value = frequency;
@@ -181,6 +192,7 @@ window.addEventListener('DOMContentLoaded', () => {
     touchObj.y = y;
     touchObj.volume = volume;
   }
+
 
   function startTouch(touch) {
     const { identifier, clientX: x, clientY: y } = touch;
