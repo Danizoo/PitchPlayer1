@@ -49,11 +49,11 @@
         const x = touch.clientX;
         const y = touch.clientY;
 
-        // Volume along Y (top = max, bottom = 0)
-        const volume = ((canvas.height - y) / canvas.height) * maxVolume;
+        // Volume along X (left = 0, right = max)
+        const volume = (x / canvas.width) * maxVolume;
 
-        // Pitch along X (left = low, right = high)
-        const pitch = (x / canvas.width) * maxPitch;
+        // Pitch along Y (top = low, bottom = high)
+        const pitch = (y / canvas.height) * maxPitch;
 
         gainNode.gain.value = volume;
         oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200);
