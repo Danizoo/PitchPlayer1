@@ -1,16 +1,14 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Pitch and Volume Control - Mobile</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>Pitch and Volume Control</title>
     <style>
         html, body {
             height: 100%;
             margin: 0;
             padding: 0;
             background-color: black;
-            touch-action: none; /* Prevent scrolling while touching */
-            overflow: hidden;
+            touch-action: none; /* Prevents default scrolling on touch */
         }
 
         #circleCanvas {
@@ -26,89 +24,109 @@
 <canvas id="circleCanvas"></canvas>
 
 <script>
-    const canvas = document.getElementById('circleCanvas');
-    const context = new AudioContext();
-    let oscillator = null;
-    let gainNode = null;
+    window.addEventListener('DOMContentLoaded', () => {
+        const context = new AudioContext();
+        let oscillator = null;
+        let gainNode = null;
 
-    const maxVolume = 1;
-    const maxPitch = 2400; // 2 octaves
+        // Set initial values
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        const maxVolume = 1;
+        const maxPitch = 2400; // Equivalent to 2 octaves
 
-    function resizeCanvas() {
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-    }
+        const canvas = document.getElementById('circleCanvas');
+        canvas.width = screenWidth;
+        canvas.height = screenHeight;
 
-    window.addEventListener('resize', resizeCanvas);
-    resizeCanvas();
+        // Calculate pitch and volume based on coordinates
+        function calculatePitchAndVolume(event) {
+            let x, y;
 
-    function calculatePitchAndVolume(event) {
-        if (!gainNode || !oscillator) return;
+            if (event.type.startsWith('touch')) {
+                const touch = event.touches[0] || event.changedTouches[0];
+                x = touch.clientX;
+                y = touch.clientY;
+            } else {
+                x = event.clientX;
+                y = event.clientY;
+            }
 
-        const touch = event.touches[0];
-        const x = touch.clientX;
-        const y = touch.clientY;
+            if (!gainNode || !oscillator) return;
 
-        // Volume along X (left = 0, right = max)
-        const volume = (x / canvas.width) * maxVolume;
+            const volume = ((screenHeight - y) / screenHeight) * maxVolume;
+            const pitch = (x / screenWidth) * maxPitch;
 
-        // Pitch along Y (top = low, bottom = high)
-        const pitch = (y / canvas.height) * maxPitch;
+            gainNode.gain.value = volume;
+            oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200); // Base C4
 
-        gainNode.gain.value = volume;
-        oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200);
+            drawCircle(x, y, volume);
+        }
 
-        drawCircle(x, y, volume);
-    }
+        // Draw a circle on the canvas
+        function drawCircle(x, y, volume) {
+            const ctx = canvas.getContext('2d');
+            const circleSize = volume * 50;
+            const circleX = x;
+            const circleY = y;
 
-    function drawCircle(x, y, volume) {
-        const ctx = canvas.getContext('2d');
-        const circleSize = volume * 50;
+            const red = Math.floor((x / screenWidth) * 255);
+            const green = Math.floor((1 - Math.abs(x - screenWidth / 2) / (screenWidth / 2)) * 255);
+            const blue = Math.floor((1 - x / screenWidth) * 255);
 
-        const red = Math.floor((x / canvas.width) * 255);
-        const green = Math.floor((1 - Math.abs(x - canvas.width / 2) / (canvas.width / 2)) * 255);
-        const blue = Math.floor((1 - x / canvas.width) * 255);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.beginPath();
+            ctx.arc(circleX, circleY, circleSize, 0, 2 * Math.PI);
+            ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+            ctx.fill();
+        }
 
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.beginPath();
-        ctx.arc(x, y, circleSize, 0, 2 * Math.PI);
-        ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
-        ctx.fill();
-    }
+        // Start playing sound
+        function startSound(event) {
+            if (oscillator) return; // Already playing
 
-    function startSound(event) {
-        if (oscillator) return;
+            oscillator = context.createOscillator();
+            gainNode = context.createGain();
 
-        oscillator = context.createOscillator();
-        gainNode = context.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(context.destination);
 
-        oscillator.connect(gainNode);
-        gainNode.connect(context.destination);
+            calculatePitchAndVolume(event);
 
-        calculatePitchAndVolume(event);
-        oscillator.start();
-    }
+            oscillator.start();
+        }
 
-    function stopSound() {
-        if (!oscillator) return;
+        // Stop playing sound
+        function stopSound() {
+            if (!oscillator) return;
 
-        oscillator.stop();
-        oscillator.disconnect();
-        gainNode.disconnect();
+            oscillator.stop();
+            oscillator.disconnect();
+            gainNode.disconnect();
 
-        oscillator = null;
-        gainNode = null;
+            oscillator = null;
+            gainNode = null;
 
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
+            clearCircle();
+        }
 
-    // Touch event listeners
-    window.addEventListener('touchstart', startSound, { passive: false });
-    window.addEventListener('touchmove', calculatePitchAndVolume, { passive: false });
-    window.addEventListener('touchend', stopSound);
-    window.addEventListener('touchcancel', stopSound);
+        // Clear the canvas
+        function clearCircle() {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Event listeners
+        window.addEventListener('mousedown', startSound);
+        window.addEventListener('mouseup', stopSound);
+        window.addEventListener('mousemove', calculatePitchAndVolume);
+        window.addEventListener('mouseleave', stopSound);
+
+        window.addEventListener('touchstart', startSound, { passive: false });
+        window.addEventListener('touchmove', calculatePitchAndVolume, { passive: false });
+        window.addEventListener('touchend', stopSound);
+        window.addEventListener('touchcancel', stopSound);
+    });
 </script>
-
 </body>
 </html>
