@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pitch and Volume Control - Mobile</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            background-color: black;
+            touch-action: none; /* Prevent scrolling while touching */
+            overflow: hidden;
+        }
+
+        #circleCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        /* Force landscape orientation message */
+        #rotateMessage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            text-align: center;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="circleCanvas"></canvas>
+<div id="rotateMessage">Please rotate your device to landscape</div>
+
+<script>
+    const canvas = document.getElementById('circleCanvas');
+    const rotateMessage = document.getElementById('rotateMessage');
+    const context = new AudioContext();
+    let oscillator = null;
+    let gainNode = null;
+
+    const maxVolume = 1;
+    const maxPitch = 2400; // 2 octaves
+
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Show message if portrait
+        if (window.innerHeight > window.innerWidth) {
+            rotateMessage.style.display = 'block';
+            canvas.style.display = 'none';
+        } else {
+            rotateMessage.style.display = 'none';
+            canvas.style.display = 'block';
+        }
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function calculatePitchAndVolume(event) {
+        if (!gainNode || !oscillator) return;
+
+        const touch = event.touches[0];
+        const x = touch.clientX;
+        const y = touch.clientY;
+
+        const volume = ((canvas.height - y) / canvas.height) * maxVolume;
+        const pitch = (x / canvas.width) * maxPitch;
+
+        gainNode.gain.value = volume;
+        oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200);
+
+        drawCircle(x, y, volume);
+    }
+
+    function drawCircle(x, y, volume) {
+        const ctx = canvas.getContext('2d');
+        const circleSize = volume * 50;
+
+        const red = Math.floor((x / canvas.width) * 255);
+        const green = Math.floor((1 - Math.abs(x - canvas.width / 2) / (canvas.width / 2)) * 255);
+        const blue = Math.floor((1 - x / canvas.width) * 255);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.beginPath();
+        ctx.arc(x, y, circleSize, 0, 2 * Math.PI);
+        ctx.fillStyle = `rgb(${red}, ${green}, ${blue})`;
+        ctx.fill();
+    }
+
+    function startSound(event) {
+        if (oscillator) return;
+
+        oscillator = context.createOscillator();
+        gainNode = context.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(context.destination);
+
+        calculatePitchAndVolume(event);
+        oscillator.start();
+    }
+
+    function stopSound() {
+        if (!oscillator) return;
+
+        oscillator.stop();
+        oscillator.disconnect();
+        gainNode.disconnect();
+
+        oscillator = null;
+        gainNode = null;
+
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Touch event listeners
+    window.addEventListener('touchstart', startSound, { passive: false });
+    window.addEventListener('touchmove', calculatePitchAndVolume, { passive: false });
+    window.addEventListener('touchend', stopSound);
+    window.addEventListener('touchcancel', stopSound);
+</script>
+
+</body>
+</html>
