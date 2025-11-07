@@ -54,8 +54,8 @@
 
             if (!gainNode || !oscillator) return;
 
-            const volume = ((screenHeight - y) / screenHeight) * maxVolume;
-            const pitch = (x / screenWidth) * maxPitch;
+            const volume = ((screenWidth - x) / screenWidth) * maxVolume;
+            const pitch = (y / screenHeight) * maxPitch;
 
             gainNode.gain.value = volume;
             oscillator.frequency.value = 261.63 * Math.pow(2, pitch / 1200); // Base C4
