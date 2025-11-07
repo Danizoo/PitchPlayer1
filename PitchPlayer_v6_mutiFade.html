@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pitch and Volume Control</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background-color: black;
+      touch-action: none;
+      overflow: hidden;
+      font-family: sans-serif;
+      color: white;
+    }
+
+    #menuBar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 50px;
+      background-color: #222;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 20px;
+      box-sizing: border-box;
+      z-index: 10;
+      user-select: none;
+      gap: 10px;
+    }
+
+    #toggleButton, #octaveSelect {
+      background-color: #444;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    #toggleButton:hover, #octaveSelect:hover {
+      background-color: #666;
+    }
+
+    #circleCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+  </style>
+</head>
+<body>
+
+<div id="menuBar">
+  <button id="toggleButton">Linear</button>
+  <select id="octaveSelect">
+    <option value="1">1 Octave</option>
+    <option value="2" selected>2 Octaves</option>
+    <option value="3">3 Octaves</option>
+    <option value="4">4 Octaves</option>
+  </select>
+</div>
+
+<canvas id="circleCanvas"></canvas>
+
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  let isLogMode = false;
+  let numOctaves = 2;
+
+  const baseFreq = 261.63; // C4
+  const menuBarHeight = 50;
+  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const logCurve = 2.5;
+  const activeTouches = {};
+  const fadingCircles = []; // store fading circles
+
+  const canvas = document.getElementById('circleCanvas');
+  const ctx = canvas.getContext('2d');
+  const toggleButton = document.getElementById('toggleButton');
+  const octaveSelect = document.getElementById('octaveSelect');
+
+  function totalCents() { return 1200 * numOctaves; }
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    drawSemitoneLines();
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // y → frequency
+  function yToFrequency(y) {
+    const usableHeight = canvas.height - menuBarHeight;
+    let rel = (y - menuBarHeight) / usableHeight;
+    rel = Math.max(0, Math.min(1, rel));
+
+    if (!isLogMode) {
+      const cents = rel * totalCents();
+      return baseFreq * Math.pow(2, cents / 1200);
+    } else {
+      const normalized = 1 - Math.pow(1 - rel, 1 / logCurve);
+      const cents = normalized * totalCents();
+      return baseFreq * Math.pow(2, cents / 1200);
+    }
+  }
+
+  // frequency → y
+  function frequencyToY(frequency) {
+    const usableHeight = canvas.height - menuBarHeight;
+    const cents = 1200 * Math.log2(frequency / baseFreq);
+    const normalized = cents / totalCents();
+    const rel = !isLogMode ? normalized : 1 - Math.pow(1 - normalized, logCurve);
+    return menuBarHeight + rel * usableHeight;
+  }
+
+  function drawSemitoneLines() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.fillStyle = "white";
+    ctx.lineWidth = 1;
+    ctx.font = "12px sans-serif";
+
+    const semitoneCount = totalCents() / 100;
+    for (let i = 0; i <= semitoneCount; i++) {
+      const freq = baseFreq * Math.pow(2, i / 12);
+      const y = frequencyToY(freq);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+      const noteName = noteNames[i % 12];
+      ctx.fillText(noteName, 8, y - 4);
+    }
+  }
+
+  function drawCircle(x, y, volume, alpha = 1) {
+    const circleSize = Math.max(6, volume * 50);
+    const red = Math.floor((x / canvas.width) * 255);
+    const green = Math.floor((1 - Math.abs(x - canvas.width / 2) / (canvas.width / 2)) * 255);
+    const blue = Math.floor((1 - x / canvas.width) * 255);
+
+    ctx.beginPath();
+    ctx.arc(x, y, circleSize, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    ctx.fill();
+  }
+
+  function updateTouch(touch) {
+    const { identifier, clientX: x, clientY: y } = touch;
+    if (y < menuBarHeight) return;
+
+    const touchObj = activeTouches[identifier];
+    if (!touchObj) return;
+
+    const volume = Math.max(0, Math.min(1, x / canvas.width));
+    const frequency = yToFrequency(y);
+
+    touchObj.gain.gain.value = volume;
+    touchObj.osc.frequency.value = frequency;
+    touchObj.x = x;
+    touchObj.y = y;
+    touchObj.volume = volume;
+  }
+
+  function startTouch(touch) {
+    const { identifier, clientX: x, clientY: y } = touch;
+    if (y < menuBarHeight || activeTouches[identifier]) return;
+
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.type = 'sine';
+    osc.connect(gain);
+    gain.connect(context.destination);
+    osc.start();
+
+    activeTouches[identifier] = { osc, gain, x, y, volume: 0 };
+    updateTouch(touch);
+  }
+
+  function endTouch(touch) {
+    const { identifier } = touch;
+    const touchObj = activeTouches[identifier];
+    if (!touchObj) return;
+
+    // Add fading circle to list
+    fadingCircles.push({
+      x: touchObj.x,
+      y: touchObj.y,
+      volume: touchObj.volume,
+      alpha: 1.0,
+    });
+
+    touchObj.osc.stop();
+    touchObj.osc.disconnect();
+    touchObj.gain.disconnect();
+    delete activeTouches[identifier];
+  }
+
+  // Fade-out animation
+  function animate() {
+    drawSemitoneLines();
+
+    // Active touches
+    for (const id in activeTouches) {
+      const t = activeTouches[id];
+      drawCircle(t.x, t.y, t.volume, 1);
+    }
+
+    // Fading trails
+    for (let i = fadingCircles.length - 1; i >= 0; i--) {
+      const c = fadingCircles[i];
+      drawCircle(c.x, c.y, c.volume, c.alpha);
+      c.alpha -= 0.07;
+      if (c.alpha <= 0) fadingCircles.splice(i, 1);
+    }
+
+    requestAnimationFrame(animate);
+  }
+  animate();
+
+  // Touch events
+  window.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    for (const touch of e.changedTouches) startTouch(touch);
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    for (const touch of e.touches) updateTouch(touch);
+  }, { passive: false });
+
+  window.addEventListener('touchend', (e) => {
+    for (const touch of e.changedTouches) endTouch(touch);
+  });
+  window.addEventListener('touchcancel', (e) => {
+    for (const touch of e.changedTouches) endTouch(touch);
+  });
+
+  // Mouse fallback
+  let mouseActive = false;
+  window.addEventListener('mousedown', (e) => {
+    mouseActive = true;
+    startTouch({ identifier: 'mouse', clientX: e.clientX, clientY: e.clientY });
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!mouseActive) return;
+    updateTouch({ identifier: 'mouse', clientX: e.clientX, clientY: e.clientY });
+  });
+  window.addEventListener('mouseup', () => {
+    mouseActive = false;
+    endTouch({ identifier: 'mouse' });
+  });
+
+  // Toggle mode
+  toggleButton.addEventListener('click', () => {
+    isLogMode = !isLogMode;
+    toggleButton.textContent = isLogMode ? 'Logarithmic' : 'Linear';
+  });
+
+  // Octave selector
+  octaveSelect.addEventListener('change', (e) => {
+    numOctaves = parseInt(e.target.value);
+  });
+});
+</script>
+
+</body>
+</html>
