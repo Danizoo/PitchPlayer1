@@ -23,7 +23,7 @@
             background-color: #222;
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-end;
             padding: 0 20px;
             box-sizing: border-box;
             z-index: 2;
@@ -39,6 +39,21 @@
             font-size: 14px;
         }
         #toggleButton:hover { background-color: #666; }
+        #octaveSelect {
+        background-color: #444;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        padding: 6px 12px;
+        margin-right: 20px;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background 0.2s;
+        }
+
+        #octaveSelect:hover {
+            background-color: #666;
+        }
         #circleCanvas {
             position: absolute;
             top: 0;
@@ -50,8 +65,13 @@
 <body>
 
 <div id="menuBar">
-    <div>🎵 Pitch & Volume Control</div>
-    <button id="toggleButton">Mode: Linear</button>
+    <select id="octaveSelect">
+        <option value="1">1 Octave</option>
+        <option value="2" selected>2 Octaves</option>
+        <option value="3">3 Octaves</option>
+        <option value="4">4 Octaves</option>
+    </select>
+    <button id="toggleButton">Linear</button>
 </div>
 
 <canvas id="circleCanvas"></canvas>
@@ -64,7 +84,16 @@ window.addEventListener('DOMContentLoaded', () => {
     let isLogMode = false;
 
     const baseFreq = 261.63;            // C4
-    const totalCents = 2400;            // 2 octaves
+    //const totalCents = 2400;            // 2 octaves
+    let numOctaves = 2;               // default 2 octaves
+    let totalCents = numOctaves * 1200; // 1200 cents per octave
+
+    const octaveSelect = document.getElementById('octaveSelect');
+    octaveSelect.addEventListener('change', () => {
+        numOctaves = parseInt(octaveSelect.value);
+        totalCents = numOctaves * 1200;
+        drawSemitoneLines();
+    });
     const menuBarHeight = 50;
     const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 
@@ -223,7 +252,7 @@ function frequencyToY(frequency) {
     // Toggle button
     toggleButton.addEventListener('click', () => {
         isLogMode = !isLogMode;
-        toggleButton.textContent = `Mode: ${isLogMode ? 'Logarithmic' : 'Linear'}`;
+        toggleButton.textContent = isLogMode ? 'Logarithmic' : 'Linear';
         drawSemitoneLines();
     });
 
