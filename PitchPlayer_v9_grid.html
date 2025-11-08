@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pitch and Volume Control</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: black;
+      overflow: hidden;
+      font-family: sans-serif;
+      color: white;
+      touch-action: none;
+    }
+
+    #menuBar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 50px;
+      background: #222;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 16px;
+      box-sizing: border-box;
+      z-index: 10;
+    }
+
+    #settingsBtn {
+      background: #444;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    #settingsBtn:hover {
+      background: #666;
+    }
+
+    #settingsWindow {
+      position: fixed;
+      top: 60px;
+      right: 20px;
+      background: rgba(30,30,30,0.95);
+      border: 1px solid #555;
+      border-radius: 12px;
+      padding: 20px;
+      width: 260px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.5);
+      display: none;
+      z-index: 20;
+    }
+    #settingsWindow.show {
+      display: block;
+      animation: fadeIn 0.15s ease;
+    }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(-5px);} to{opacity:1;transform:translateY(0);} }
+
+    #settingsWindow label {
+      display: block;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+
+    #settingsWindow select,
+    #settingsWindow button {
+      margin-top: 4px;
+      width: 100%;
+      padding: 6px;
+      border-radius: 6px;
+      border: none;
+      background: #333;
+      color: white;
+      font-size: 14px;
+    }
+    #settingsWindow button:hover {
+      background: #555;
+    }
+
+    #circleCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+  </style>
+</head>
+<body>
+  <div id="menuBar">
+    <button id="settingsBtn">⚙ Settings</button>
+  </div>
+
+  <div id="settingsWindow">
+    <label>Pitch Mode</label>
+    <button id="stepToggle">Continuous</button>
+
+    <label>Octaves</label>
+    <select id="octaveSelect">
+      <option value="1">1 Octave</option>
+      <option value="2" selected>2 Octaves</option>
+      <option value="3">3 Octaves</option>
+      <option value="4">4 Octaves</option>
+    </select>
+
+    <label>Layout</label>
+    <button id="layoutToggle">Linear View</button>
+  </div>
+
+  <canvas id="circleCanvas"></canvas>
+
+  <script>
+  window.addEventListener('DOMContentLoaded', () => {
+    const context = new (window.AudioContext || window.webkitAudioContext)();
+    let numOctaves = 2;
+    let isSteppedMode = false;
+    let isGridLayout = false;
+
+    const baseFreq = 261.63; // C4
+    const menuBarHeight = 50;
+    const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+    const activeTouches = {};
+    const fadingCircles = [];
+
+    const canvas = document.getElementById('circleCanvas');
+    const ctx = canvas.getContext('2d');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const settingsWindow = document.getElementById('settingsWindow');
+    const octaveSelect = document.getElementById('octaveSelect');
+    const stepToggle = document.getElementById('stepToggle');
+    const layoutToggle = document.getElementById('layoutToggle');
+
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      drawSemitoneLines();
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- Frequency mapping ---
+    function yToFrequency(x, y) {
+      const usableHeight = canvas.height - menuBarHeight;
+      let relY = (y - menuBarHeight) / usableHeight;
+      relY = Math.max(0, Math.min(1, relY));
+
+      if (isGridLayout) {
+        const octaveWidth = canvas.width / numOctaves;
+        let octaveIndex = Math.floor(x / octaveWidth);
+        octaveIndex = Math.min(octaveIndex, numOctaves - 1);
+
+        const cents = relY * 1200;
+        let totalCentsValue = cents + octaveIndex * 1200;
+        if (isSteppedMode) totalCentsValue = Math.round(totalCentsValue / 100) * 100;
+        return baseFreq * Math.pow(2, totalCentsValue / 1200);
+      } else {
+        // Linear view: Y spans all octaves
+        const cents = relY * 1200 * numOctaves;
+        const totalCentsValue = isSteppedMode ? Math.round(cents / 100) * 100 : cents;
+        return baseFreq * Math.pow(2, totalCentsValue / 1200);
+      }
+    }
+
+    function frequencyToY(frequency) {
+      const usableHeight = canvas.height - menuBarHeight;
+      const cents = 1200 * Math.log2(frequency / baseFreq);
+      if (isGridLayout) {
+        const withinOctave = cents % 1200;
+        return menuBarHeight + (withinOctave / 1200) * usableHeight;
+      } else {
+        // Linear view: full height = all octaves
+        const normalized = cents / (1200 * numOctaves);
+        return menuBarHeight + normalized * usableHeight;
+      }
+    }
+
+    function drawSemitoneLines() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 1;
+      ctx.font = "12px sans-serif";
+
+      const octaveWidth = canvas.width / numOctaves;
+
+      if (isGridLayout) {
+        // Vertical octave separators
+        ctx.strokeStyle = "rgba(255,255,255,0.15)";
+        for (let i = 1; i < numOctaves; i++) {
+          const x = i * octaveWidth;
+          ctx.beginPath();
+          ctx.moveTo(x, menuBarHeight);
+          ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+        }
+      }
+
+      const semitoneCount = 12;
+      for (let octave = 0; octave < numOctaves; octave++) {
+        for (let i = 0; i <= semitoneCount; i++) {
+          const freq = baseFreq * Math.pow(2, (octave * 12 + i) / 12);
+          const y = frequencyToY(freq);
+
+          ctx.beginPath();
+          ctx.moveTo(isGridLayout ? octave * octaveWidth : 0, y);
+          ctx.lineTo(isGridLayout ? (octave + 1) * octaveWidth : canvas.width, y);
+          ctx.strokeStyle = "rgba(255,255,255,0.18)";
+          ctx.stroke();
+
+          const noteName = noteNames[i % 12];
+          ctx.fillStyle = "white";
+          ctx.fillText(noteName, isGridLayout ? octave * octaveWidth + 8 : 8, y - 4);
+        }
+      }
+    }
+
+    function drawCircle(x, y, alpha = 1) {
+      const circleSize = 12;
+      ctx.beginPath();
+      ctx.arc(x, y, circleSize, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,200,255,${alpha})`;
+      ctx.fill();
+    }
+
+    function updateTouch(touch) {
+      const { identifier, clientX: x } = touch;
+      let { clientY: y } = touch;
+      if (y < menuBarHeight) return;
+      const touchObj = activeTouches[identifier];
+      if (!touchObj) return;
+
+      // Volume = 1 always
+      const volume = 1;
+
+      let frequency = yToFrequency(x, y);
+      if (isSteppedMode) {
+        const cents = 1200 * Math.log2(frequency / baseFreq);
+        const snappedCents = Math.round(cents / 100) * 100;
+        frequency = baseFreq * Math.pow(2, snappedCents / 1200);
+        y = frequencyToY(frequency);
+      }
+
+      touchObj.gain.gain.value = volume;
+      touchObj.osc.frequency.value = frequency;
+      touchObj.x = x;
+      touchObj.y = y;
+    }
+
+    function startTouch(touch) {
+      const { identifier, clientX: x, clientY: y } = touch;
+      if (y < menuBarHeight || activeTouches[identifier]) return;
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      osc.type = 'sine';
+      osc.connect(gain);
+      gain.connect(context.destination);
+      osc.start();
+      activeTouches[identifier] = { osc, gain, x, y };
+      updateTouch(touch);
+    }
+
+    function endTouch(touch) {
+      const { identifier } = touch;
+      const touchObj = activeTouches[identifier];
+      if (!touchObj) return;
+      fadingCircles.push({ x: touchObj.x, y: touchObj.y, alpha: 1.0 });
+      touchObj.osc.stop();
+      touchObj.osc.disconnect();
+      touchObj.gain.disconnect();
+      delete activeTouches[identifier];
+    }
+
+    function animate() {
+      drawSemitoneLines();
+      for (const id in activeTouches) {
+        const t = activeTouches[id];
+        drawCircle(t.x, t.y, 1);
+      }
+      for (let i = fadingCircles.length - 1; i >= 0; i--) {
+        const c = fadingCircles[i];
+        drawCircle(c.x, c.y, c.alpha);
+        c.alpha -= 0.07;
+        if (c.alpha <= 0) fadingCircles.splice(i, 1);
+      }
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // Touch + Mouse events
+    function setupTouchEvents() {
+      window.addEventListener('touchstart', e => {
+        if (e.target.closest('#menuBar') || e.target.closest('#settingsWindow')) return;
+        e.preventDefault();
+        for (const t of e.changedTouches) startTouch(t);
+      }, { passive: false });
+      window.addEventListener('touchmove', e => {
+        if (e.target.closest('#menuBar') || e.target.closest('#settingsWindow')) return;
+        e.preventDefault();
+        for (const t of e.touches) updateTouch(t);
+      }, { passive: false });
+      window.addEventListener('touchend', e => { for (const t of e.changedTouches) endTouch(t); });
+      window.addEventListener('touchcancel', e => { for (const t of e.changedTouches) endTouch(t); });
+      let mouseActive = false;
+      window.addEventListener('mousedown', e => {
+        if (e.target.closest('#menuBar') || e.target.closest('#settingsWindow')) return;
+        mouseActive = true; startTouch({identifier:'mouse',clientX:e.clientX,clientY:e.clientY});
+      });
+      window.addEventListener('mousemove', e => {
+        if (!mouseActive) return;
+        updateTouch({identifier:'mouse',clientX:e.clientX,clientY:e.clientY});
+      });
+      window.addEventListener('mouseup', () => { mouseActive = false; endTouch({identifier:'mouse'}); });
+    }
+    setupTouchEvents();
+
+    // Settings controls
+    settingsBtn.addEventListener('click', () => {
+      settingsWindow.classList.toggle('show');
+    });
+
+    stepToggle.addEventListener('click', () => {
+      isSteppedMode = !isSteppedMode;
+      stepToggle.textContent = isSteppedMode ? 'Stepped' : 'Continuous';
+    });
+
+    octaveSelect.addEventListener('change', e => {
+      numOctaves = parseInt(e.target.value);
+    });
+
+    layoutToggle.addEventListener('click', () => {
+      isGridLayout = !isGridLayout;
+      layoutToggle.textContent = isGridLayout ? 'Grid View' : 'Linear View';
+    });
+  });
+  </script>
+</body>
+</html>
