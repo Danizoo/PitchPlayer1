@@ -252,19 +252,24 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Touch events
   window.addEventListener('touchstart', (e) => {
+    // Ignore touches on the menu bar
+    if (e.target.closest('#menuBar')) return;
     e.preventDefault();
     for (const touch of e.changedTouches) startTouch(touch);
   }, { passive: false });
 
   window.addEventListener('touchmove', (e) => {
+    if (e.target.closest('#menuBar')) return;
     e.preventDefault();
     for (const touch of e.touches) updateTouch(touch);
   }, { passive: false });
 
   window.addEventListener('touchend', (e) => {
+    if (e.target.closest('#menuBar')) return;
     for (const touch of e.changedTouches) endTouch(touch);
   });
   window.addEventListener('touchcancel', (e) => {
+    if (e.target.closest('#menuBar')) return;
     for (const touch of e.changedTouches) endTouch(touch);
   });
 
