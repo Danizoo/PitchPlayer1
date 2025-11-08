@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pitch and Volume Control</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      background-color: black;
+      touch-action: none;
+      overflow: hidden;
+      font-family: sans-serif;
+      color: white;
+    }
+
+    #menuBar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 50px;
+      background-color: #222;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 20px;
+      box-sizing: border-box;
+      z-index: 10;
+      user-select: none;
+      gap: 10px;
+    }
+
+    #toggleButton, #octaveSelect, #stepToggle, #keySelect {
+      background-color: #444;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    #toggleButton:hover, #octaveSelect:hover, #stepToggle:hover, #keySelect:hover {
+      background-color: #666;
+    }
+
+    button:disabled {
+      background-color: #333;
+      color: #777;
+      cursor: not-allowed;
+    }
+
+    #circleCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      z-index: 1;
+    }
+  </style>
+</head>
+<body>
+
+<div id="menuBar">
+  <select id="octaveSelect">
+    <option value="1">1 Octave</option>
+    <option value="2" selected>2 Octaves</option>
+    <option value="3">3 Octaves</option>
+    <option value="4">4 Octaves</option>
+  </select>
+  <select id="keySelect">
+    <option value="chromatic" selected>Chromatic</option>
+    <option value="C major">C Major</option>
+    <option value="D major">D Major</option>
+    <option value="E major">E Major</option>
+    <option value="F major">F Major</option>
+    <option value="G major">G Major</option>
+    <option value="A major">A Major</option>
+    <option value="B major">B Major</option>
+    <option value="C minor">C Minor</option>
+    <option value="D minor">D Minor</option>
+    <option value="E minor">E Minor</option>
+    <option value="F minor">F Minor</option>
+    <option value="G minor">G Minor</option>
+    <option value="A minor">A Minor</option>
+    <option value="B minor">B Minor</option>
+  </select>
+  <button id="stepToggle">Con</button>
+  <button id="toggleButton">Linear</button>
+</div>
+
+<canvas id="circleCanvas"></canvas>
+
+<script>
+window.addEventListener('DOMContentLoaded', () => {
+  const context = new (window.AudioContext || window.webkitAudioContext)();
+  let isLogMode = false;
+  let numOctaves = 2;
+
+  let baseFreq = 261.63; // C4
+  const menuBarHeight = 50;
+  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const logCurve = 2.5;
+  const activeTouches = {};
+  const fadingCircles = []; // store fading circles
+
+  const canvas = document.getElementById('circleCanvas');
+  const ctx = canvas.getContext('2d');
+  const toggleButton = document.getElementById('toggleButton');
+  const octaveSelect = document.getElementById('octaveSelect');
+  const stepToggle = document.getElementById('stepToggle');
+  let isSteppedMode = false;
+  const keySelect = document.getElementById('keySelect');
+  
+  let currentScale = 'chromatic';
+
+  const scales = {
+    major: [0, 2, 4, 5, 7, 9, 11],
+    minor: [0, 2, 3, 5, 7, 8, 10],
+  };
+
+  function getNoteIndex(noteName) {
+    return noteNames.indexOf(noteName.replace('#', '♯'));
+  }
+
+  function getScaleNotes(rootNote, scaleType) {
+    const rootIndex = noteNames.findIndex(n => n === rootNote);
+    if (rootIndex === -1) return [];
+    return scales[scaleType].map(i => (rootIndex + i) % 12);
+  }
+
+  function totalCents() { return 1200 * numOctaves; }
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    drawSemitoneLines();
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // y → frequency
+  function yToFrequency(y) {
+    const usableHeight = canvas.height - menuBarHeight;
+    let rel = (y - menuBarHeight) / usableHeight;
+    rel = Math.max(0, Math.min(1, rel));
+
+    let cents;
+    if (!isLogMode) {
+      cents = rel * totalCents();
+    } else {
+      const normalized = 1 - Math.pow(1 - rel, 1 / logCurve);
+      cents = normalized * totalCents();
+    }
+
+    let freq = baseFreq * Math.pow(2, cents / 1200);
+
+    // --- NEW: snap to nearest semitone when stepped mode is ON ---
+    if (isSteppedMode) {
+      cents = Math.round(cents / 100) * 100;
+      freq = baseFreq * Math.pow(2, cents / 1200);
+    }
+
+    if (currentScale !== 'chromatic') {
+      const [root, type] = currentScale.split(' ');
+      const allowedNotes = getScaleNotes(root, type);
+      const cents = 1200 * Math.log2(freq / baseFreq);
+      const semitone = Math.round(cents / 100);
+      let snappedSemitone = semitone;
+
+      // Snap to nearest allowed note in scale
+      let minDiff = Infinity;
+      for (const note of allowedNotes) {
+        const diff = Math.abs((semitone % 12) - note);
+        if (diff < minDiff) {
+          minDiff = diff;
+          snappedSemitone = semitone + (note - (semitone % 12));
+        }
+      }
+      freq = baseFreq * Math.pow(2, snappedSemitone / 12);
+    }
+
+    return freq;
+  }
+
+  // frequency → y
+  function frequencyToY(frequency) {
+    const usableHeight = canvas.height - menuBarHeight;
+    const cents = 1200 * Math.log2(frequency / baseFreq);
+    const normalized = cents / totalCents();
+    const rel = !isLogMode ? normalized : 1 - Math.pow(1 - normalized, logCurve);
+    return menuBarHeight + rel * usableHeight;
+  }
+
+  function drawSemitoneLines() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = "rgba(255,255,255,0.18)";
+    ctx.fillStyle = "white";
+    ctx.lineWidth = 1;
+    ctx.font = "12px sans-serif";
+
+    const semitoneCount = totalCents() / 100;
+    let allowedNotes = null;
+    if (currentScale !== 'chromatic') {
+      const [root, type] = currentScale.split(' ');
+      allowedNotes = getScaleNotes(root, type);
+    }
+
+    for (let i = 0; i <= semitoneCount; i++) {
+      const noteIndex = i % 12;
+      const freq = baseFreq * Math.pow(2, i / 12);
+      const y = frequencyToY(freq);
+
+      // Faint lines for non-scale notes
+      if (allowedNotes && !allowedNotes.includes(noteIndex)) {
+        ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      } else {
+        ctx.strokeStyle = "rgba(255,255,255,0.25)";
+      }
+
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+
+      // Label only visible or scale notes
+      if (!allowedNotes || allowedNotes.includes(noteIndex)) {
+        const noteName = noteNames[noteIndex];
+        ctx.fillText(noteName, 8, y - 4);
+      }
+    }
+  }
+
+  function drawCircle(x, y, volume, alpha = 1) {
+    const circleSize = Math.max(6, volume * 50);
+    const red = Math.floor((x / canvas.width) * 255);
+    const green = Math.floor((1 - Math.abs(x - canvas.width / 2) / (canvas.width / 2)) * 255);
+    const blue = Math.floor((1 - x / canvas.width) * 255);
+
+    ctx.beginPath();
+    ctx.arc(x, y, circleSize, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    ctx.fill();
+  }
+
+  function updateTouch(touch) {
+    const { identifier, clientX: x } = touch;
+    let { clientY: y } = touch;
+    if (y < menuBarHeight) return;
+
+    const touchObj = activeTouches[identifier];
+    if (!touchObj) return;
+
+    const volume = Math.max(0, Math.min(1, x / canvas.width));
+    let frequency = yToFrequency(y);
+
+    // --- If stepped mode: snap to nearest semitone (and visually snap Y) ---
+    if (isSteppedMode) {
+      // compute the nearest semitone frequency relative to base
+      const cents = 1200 * Math.log2(frequency / baseFreq);
+      const snappedCents = Math.round(cents / 100) * 100;
+      frequency = baseFreq * Math.pow(2, snappedCents / 1200);
+      // visually move Y to that exact semitone line
+      y = frequencyToY(frequency);
+    }
+
+    touchObj.gain.gain.value = volume;
+    touchObj.osc.frequency.value = frequency;
+    touchObj.x = x;
+    touchObj.y = y;
+    touchObj.volume = volume;
+  }
+
+
+  function startTouch(touch) {
+    const { identifier, clientX: x, clientY: y } = touch;
+    if (y < menuBarHeight || activeTouches[identifier]) return;
+
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.type = 'sine';
+    osc.connect(gain);
+    gain.connect(context.destination);
+    osc.start();
+
+    activeTouches[identifier] = { osc, gain, x, y, volume: 0 };
+    updateTouch(touch);
+  }
+
+  function endTouch(touch) {
+    const { identifier } = touch;
+    const touchObj = activeTouches[identifier];
+    if (!touchObj) return;
+
+    // Add fading circle to list
+    fadingCircles.push({
+      x: touchObj.x,
+      y: touchObj.y,
+      volume: touchObj.volume,
+      alpha: 1.0,
+    });
+
+    touchObj.osc.stop();
+    touchObj.osc.disconnect();
+    touchObj.gain.disconnect();
+    delete activeTouches[identifier];
+  }
+
+  // Fade-out animation
+  function animate() {
+    drawSemitoneLines();
+
+    // Active touches
+    for (const id in activeTouches) {
+      const t = activeTouches[id];
+      drawCircle(t.x, t.y, t.volume, 1);
+    }
+
+    // Fading trails
+    for (let i = fadingCircles.length - 1; i >= 0; i--) {
+      const c = fadingCircles[i];
+      drawCircle(c.x, c.y, c.volume, c.alpha);
+      c.alpha -= 0.07;
+      if (c.alpha <= 0) fadingCircles.splice(i, 1);
+    }
+
+    requestAnimationFrame(animate);
+  }
+  animate();
+
+  // Touch events
+  window.addEventListener('touchstart', (e) => {
+    // Ignore touches on the menu bar
+    if (e.target.closest('#menuBar')) return;
+    e.preventDefault();
+    for (const touch of e.changedTouches) startTouch(touch);
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    if (e.target.closest('#menuBar')) return;
+    e.preventDefault();
+    for (const touch of e.touches) updateTouch(touch);
+  }, { passive: false });
+
+  window.addEventListener('touchend', (e) => {
+    if (e.target.closest('#menuBar')) return;
+    for (const touch of e.changedTouches) endTouch(touch);
+  });
+  window.addEventListener('touchcancel', (e) => {
+    if (e.target.closest('#menuBar')) return;
+    for (const touch of e.changedTouches) endTouch(touch);
+  });
+
+  // Mouse fallback
+  let mouseActive = false;
+  window.addEventListener('mousedown', (e) => {
+    mouseActive = true;
+    startTouch({ identifier: 'mouse', clientX: e.clientX, clientY: e.clientY });
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!mouseActive) return;
+    updateTouch({ identifier: 'mouse', clientX: e.clientX, clientY: e.clientY });
+  });
+  window.addEventListener('mouseup', () => {
+    mouseActive = false;
+    endTouch({ identifier: 'mouse' });
+  });
+
+  // Toggle mode
+  toggleButton.addEventListener('click', () => {
+    isLogMode = !isLogMode;
+    toggleButton.textContent = isLogMode ? 'Log' : 'Lin';
+  });
+
+  // Octave selector
+  octaveSelect.addEventListener('change', (e) => {
+    numOctaves = parseInt(e.target.value);
+  });
+
+  // Stepped mode toggle
+  stepToggle.addEventListener('click', () => {
+    isSteppedMode = !isSteppedMode;
+    stepToggle.textContent = isSteppedMode ? 'Step' : 'Con';
+  });
+
+  keySelect.addEventListener('change', (e) => {
+    currentScale = e.target.value;
+
+    if (currentScale === 'chromatic') {
+      // Restore base frequency to C4 and re-enable continuous mode toggle
+      baseFreq = 261.63; // C4
+      stepToggle.disabled = false;
+      stepToggle.textContent = isSteppedMode ? 'Step' : 'Con';
+      stepToggle.style.opacity = '1.0';
+    } else {
+      // Extract root and scale type
+      const [root, type] = currentScale.split(' ');
+      const rootIndex = noteNames.findIndex(n => n === root);
+
+      // Update base frequency dynamically for the chosen key
+      // One semitone = 100 cents, so shift baseFreq accordingly
+      const freqShift = Math.pow(2, rootIndex / 12);
+      baseFreq = 261.63 * freqShift; // relative to C4
+
+      // Force stepped mode on, disable toggle
+      isSteppedMode = true;
+      stepToggle.disabled = true;
+      stepToggle.textContent = 'Step';
+      stepToggle.style.opacity = '0.5';
+    }
+
+    drawSemitoneLines();
+  });
+});
+</script>
+
+</body>
+</html>
