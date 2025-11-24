@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Pitch & Volume Control — Clean Version</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    html,body{
+      height:100%;
+      margin:0;
+      padding:0;
+      background:#000;
+      color:#fff;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+      touch-action:none;
+      overflow:hidden;
+    }
+
+    /* Top bar */
+    #menuBar{
+      position:fixed;
+      top:0;
+      left:0;
+      right:0;
+      height:50px;
+      background:#222;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:flex-end;
+      padding:0 14px;
+      box-sizing:border-box;
+      z-index:20;
+      user-select:none;
+    }
+
+    #menuBar select, #menuBar button {
+      background:#444;
+      color:white;
+      border:none;
+      padding:8px 12px;
+      border-radius:8px;
+      font-size:14px;
+      cursor:pointer;
+    }
+    #menuBar select { appearance:none; -webkit-appearance:none; }
+    #menuBar button:hover, #menuBar select:hover { background:#666; }
+
+    #menuBar button[disabled]{
+      background:#333;
+      color:#777;
+      cursor:not-allowed;
+    }
+
+    canvas { position:absolute; top:0; left:0; z-index:1; }
+
+    /* small note: keep canvas under the menu bar visually */
+  </style>
+</head>
+<body>
+  <div id="menuBar">
+    <select id="octaveSelect" title="Number of octaves (height)">
+      <option value="1">1 Octave</option>
+      <option value="2" selected>2 Octaves</option>
+      <option value="3">3 Octaves</option>
+      <option value="4">4 Octaves</option>
+    </select>
+
+    <select id="keySelect" title="Choose key or chromatic">
+      <option value="chromatic" selected>Chromatic</option>
+      <option value="C major">C Major</option>
+      <option value="D major">D Major</option>
+      <option value="E major">E Major</option>
+      <option value="F major">F Major</option>
+      <option value="G major">G Major</option>
+      <option value="A major">A Major</option>
+      <option value="B major">B Major</option>
+      <option value="C minor">C Minor</option>
+      <option value="D minor">D Minor</option>
+      <option value="E minor">E Minor</option>
+      <option value="F minor">F Minor</option>
+      <option value="G minor">G Minor</option>
+      <option value="A minor">A Minor</option>
+      <option value="B minor">B Minor</option>
+    </select>
+
+    <select id="waveformSelect" title="Oscillator waveform">
+      <option value="sine" selected>Sine</option>
+      <option value="square">Square</option>
+      <option value="sawtooth">Sawtooth</option>
+      <option value="triangle">Triangle</option>
+    </select>
+
+    <button id="stepToggle" title="Continuous / Stepped">Con</button>
+    <button id="layoutToggle" title="Linear / Grid layout">Linear</button>
+  </div>
+
+  <canvas id="circleCanvas"></canvas>
+
+<script>
+/* ====== Pitch & Volume Control — Clean, fully working ======
+   Features:
+   - Linear view (Y spans all octaves; X => volume)
+   - Grid view (vertical strips = octaves; X => octave, volume fixed)
+   - Chromatic (continuous) and keyed (snapped) modes
+   - Multitouch (each touch creates its own oscillator)
+   - Waveform selector (sine/square/sawtooth/triangle)
+   - Stepped snapping (100-cent / semitone)
+   - Key selection shifts base frequency to chosen root
+   - Non-scale notes shown faint
+   - All options in top bar; controls clickable on mobile
+*/
+
+window.addEventListener('DOMContentLoaded', () => {
+  // Audio
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const context = new AudioCtx();
+
+  // DOM
+  const canvas = document.getElementById('circleCanvas');
+  const ctx = canvas.getContext('2d');
+  const octaveSelect = document.getElementById('octaveSelect');
+  const keySelect = document.getElementById('keySelect');
+  const waveformSelect = document.getElementById('waveformSelect');
+  const stepToggle = document.getElementById('stepToggle');
+  const layoutToggle = document.getElementById('layoutToggle');
+
+  // State
+  const menuBarHeight = 50;
+  const C4 = 261.63;
+  let baseFreq = C4;       // Will shift when key selected
+  let numOctaves = parseInt(octaveSelect.value, 10);
+  let isSteppedMode = false;   // toggled (but forced when key chosen)
+  let isGridLayout = false;    // Linear by default
+  let currentWaveform = waveformSelect.value;
+  let currentScale = 'chromatic'; // 'chromatic' or "D minor" etc.
+
+  const activeTouches = {};   // id -> { osc, gain, x, y, volume }
+  const fadingCircles = [];   // {x,y,alpha}
+
+  const noteNames = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const scales = {
+    major: [0,2,4,5,7,9,11],
+    minor: [0,2,3,5,7,8,10],
+  };
+
+  function totalCents() { return 1200 * numOctaves; }
+
+  // resize
+  function resizeCanvas(){
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    drawSemitoneLines();
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // helper: clamp
+  const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+
+  // Get scale allowed note indices (0..11)
+  function getScaleNotes(rootNote, type) {
+    const rootIndex = noteNames.indexOf(rootNote);
+    if (rootIndex === -1) return [];
+    return scales[type].map(i => (rootIndex + i) % 12);
+  }
+
+  // Snap semitone to nearest allowed semitone (search +/- 6 semitones)
+  function snapSemitoneToScale(semitone, allowedNotes) {
+    if (!allowedNotes || allowedNotes.length === 0) return semitone;
+    let best = semitone;
+    let bestDist = Infinity;
+    for (let k = -6; k <= 6; k++) {
+      const candidate = semitone + k;
+      const m = ((candidate % 12) + 12) % 12;
+      if (allowedNotes.includes(m)) {
+        const dist = Math.abs(k);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = candidate;
+          if (bestDist === 0) break;
+        }
+      }
+    }
+    return best;
+  }
+
+  // ----- Frequency mapping -----
+  // Returns frequency for given (x,y) pointer
+  function yxToFrequency(x, y) {
+    const usableHeight = canvas.height - menuBarHeight;
+    // clamp inside usable area
+    let relY = (y - menuBarHeight) / usableHeight;
+    relY = clamp(relY, 0, 1);
+
+    // GRID MODE: select octave from X (0..numOctaves-1), Y within octave (0..1)
+    if (isGridLayout) {
+      const octaveWidth = canvas.width / numOctaves;
+      let octaveIndex = Math.floor(x / octaveWidth);
+      octaveIndex = clamp(octaveIndex, 0, numOctaves - 1);
+
+      // relY maps 0..1200 cents inside that octave
+      let centsInOctave = relY * 1200;
+      let totalCentsValue = centsInOctave + octaveIndex * 1200;
+
+      // If stepped (or key mode forced), snap to semitone
+      if (isSteppedMode || currentScale !== 'chromatic') {
+        totalCentsValue = Math.round(totalCentsValue / 100) * 100;
+      }
+
+      // If key selected and scale filtering active, snap to nearest allowed note (across octaves)
+      if (currentScale !== 'chromatic') {
+        const [root, type] = currentScale.split(' ');
+        const allowed = getScaleNotes(root, type);
+        const semitone = Math.round(totalCentsValue / 100);
+        const snapped = snapSemitoneToScale(semitone, allowed);
+        totalCentsValue = snapped * 100;
+      }
+
+      return baseFreq * Math.pow(2, totalCentsValue / 1200);
+    }
+
+    // LINEAR MODE: full Y spans numOctaves
+    let cents = relY * totalCents();
+    if (isSteppedMode) cents = Math.round(cents / 100) * 100;
+
+    if (currentScale !== 'chromatic') {
+      // Snap to nearest allowed note across whole range
+      const [root, type] = currentScale.split(' ');
+      const allowed = getScaleNotes(root, type);
+      const semitone = Math.round(cents / 100);
+      const snapped = snapSemitoneToScale(semitone, allowed);
+      cents = snapped * 100;
+    }
+
+    return baseFreq * Math.pow(2, cents / 1200);
+  }
+
+  // frequency -> y for drawing lines/circles
+  function frequencyToY(frequency) {
+    const usableHeight = canvas.height - menuBarHeight;
+    const cents = 1200 * Math.log2(frequency / baseFreq);
+
+    if (isGridLayout) {
+      const within = ((cents % 1200) + 1200) % 1200;
+      const rel = within / 1200;
+      return menuBarHeight + rel * usableHeight;
+    } else {
+      const rel = cents / totalCents();
+      return menuBarHeight + rel * usableHeight;
+    }
+  }
+
+  // ----- Drawing -----
+  function drawSemitoneLines() {
+    ctx.clearRect(0,0,canvas.width, canvas.height);
+    ctx.font = "12px sans-serif";
+    ctx.lineWidth = 1;
+
+    const semitoneCount = numOctaves * 12;
+    const octaveWidth = canvas.width / numOctaves;
+
+    // If grid, draw vertical separators
+    if (isGridLayout) {
+      ctx.strokeStyle = "rgba(255,255,255,0.09)";
+      for (let i=1; i<numOctaves; i++){
+        const x = i * octaveWidth;
+        ctx.beginPath();
+        ctx.moveTo(x, menuBarHeight);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+    }
+
+    // Determine allowed notes when key selected
+    let allowedNotes = null;
+    if (currentScale !== 'chromatic') {
+      const [root, type] = currentScale.split(' ');
+      allowedNotes = getScaleNotes(root, type);
+    }
+
+    // Draw horizontal semitone lines (for each semitone from base, across octaves)
+    for (let i = 0; i <= semitoneCount; i++) {
+      const freq = baseFreq * Math.pow(2, i / 12);
+      const y = frequencyToY(freq);
+
+      // style
+      const noteIndex = i % 12;
+      const isAllowed = !allowedNotes || allowedNotes.includes(noteIndex);
+      ctx.strokeStyle = isAllowed ? "rgba(255,255,255,0.20)" : "rgba(255,255,255,0.06)";
+      ctx.beginPath();
+
+      if (isGridLayout) {
+        // draw each semitone line only inside each octave strip
+        for (let o = 0; o < numOctaves; o++) {
+          const x0 = o * octaveWidth;
+          const x1 = (o+1) * octaveWidth;
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x1, y);
+        }
+      } else {
+        // full width
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+      }
+      ctx.stroke();
+
+      // labels only for allowed notes (or for chromatic, all)
+      if (isAllowed) {
+        ctx.fillStyle = "white";
+        if (isGridLayout) {
+          // label each octave strip
+          for (let o = 0; o < numOctaves; o++) {
+            const xLabel = o * octaveWidth + 8;
+            ctx.fillText(noteNames[noteIndex], xLabel, y - 4);
+          }
+        } else {
+          ctx.fillText(noteNames[noteIndex], 8, y - 4);
+        }
+      }
+    }
+  }
+
+  function drawCircle(x, y, volume=1, alpha=1) {
+    const size = Math.max(8, volume * 36);
+    ctx.beginPath();
+    ctx.arc(x, y, size, 0, Math.PI*2);
+    ctx.fillStyle = `rgba(0,200,255,${alpha})`;
+    ctx.fill();
+  }
+
+  // ----- Touch / Mouse handling -----
+  function startTouch(touch) {
+    const id = touch.identifier == null ? 'mouse' : touch.identifier;
+    const x = touch.clientX;
+    const y = touch.clientY;
+    if (y < menuBarHeight) return; // ignore when starting on bar
+    if (activeTouches[id]) return;
+
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    // initial gain 0 to avoid pops, ramp quickly in updateTouch
+    gain.gain.value = 0;
+    osc.type = currentWaveform;
+    osc.connect(gain);
+    gain.connect(context.destination);
+    osc.start();
+
+    activeTouches[id] = { osc, gain, x, y, volume:0 };
+    // immediately update parameters
+    updateTouch({ identifier: id, clientX: x, clientY: y });
+  }
+
+  function updateTouch(touch) {
+    const id = touch.identifier == null ? 'mouse' : touch.identifier;
+    let x = touch.clientX;
+    let y = touch.clientY;
+    if (y < menuBarHeight) return;
+    const obj = activeTouches[id];
+    if (!obj) return;
+
+    // Volume: linear view -> X controls volume (0..1)
+    // Grid view -> fixed volume (1)
+    const volume = isGridLayout ? 1 : clamp(x / canvas.width, 0, 1);
+
+    // Frequency: depending on layout
+    let freq = yxToFrequency(x, y);
+
+    // If in keyed mode, ensure snapping to scale (yToFrequency already does that)
+    // Visual y maybe shifted to exact semitone position for snapped sound:
+    if (isSteppedMode || currentScale !== 'chromatic') {
+      const cents = 1200 * Math.log2(freq / baseFreq);
+      const snappedCents = Math.round(cents / 100) * 100;
+      freq = baseFreq * Math.pow(2, snappedCents / 1200);
+      y = frequencyToY(freq);
+    }
+
+    // set audio (avoid abrupt jumps in gain: simple immediate set is fine, you can smooth later)
+    obj.gain.gain.setTargetAtTime(volume, context.currentTime, 0.01);
+    obj.osc.frequency.setTargetAtTime(freq, context.currentTime, 0.01);
+
+    obj.x = x; obj.y = y; obj.volume = volume;
+  }
+
+  function endTouch(touch) {
+    const id = touch.identifier == null ? 'mouse' : touch.identifier;
+    const obj = activeTouches[id];
+    if (!obj) return;
+
+    // Fading circle trail
+    fadingCircles.push({ x: obj.x, y: obj.y, alpha: 1.0 });
+
+    // Fade out gain slightly then stop oscillator
+    const now = context.currentTime;
+    obj.gain.gain.cancelScheduledValues(now);
+    obj.gain.gain.setTargetAtTime(0, now, 0.05);
+    // Stop after short delay so fade completes
+    setTimeout(() => {
+      try {
+        obj.osc.stop();
+      } catch(e) {}
+      try { obj.osc.disconnect(); } catch(e){}
+      try { obj.gain.disconnect(); } catch(e){}
+    }, 120);
+
+    delete activeTouches[id];
+  }
+
+  // Pointer event wrappers for touch+mouse friendly handling:
+  function setupPointerEvents(){
+    // Touch
+    window.addEventListener('touchstart', (e) => {
+      // allow interacting with menu controls
+      if (e.target.closest('#menuBar')) return;
+      e.preventDefault();
+      for (const t of e.changedTouches) startTouch(t);
+    }, { passive:false });
+
+    window.addEventListener('touchmove', (e) => {
+      if (e.target.closest('#menuBar')) return;
+      e.preventDefault();
+      for (const t of e.touches) updateTouch(t);
+    }, { passive:false });
+
+    window.addEventListener('touchend', (e) => {
+      if (e.target.closest('#menuBar')) return;
+      for (const t of e.changedTouches) endTouch(t);
+    });
+
+    window.addEventListener('touchcancel', (e) => {
+      if (e.target.closest('#menuBar')) return;
+      for (const t of e.changedTouches) endTouch(t);
+    });
+
+    // Mouse fallback
+    let mouseActive = false;
+    window.addEventListener('mousedown', (e) => {
+      if (e.target.closest('#menuBar')) return;
+      mouseActive = true;
+      startTouch({ identifier:'mouse', clientX: e.clientX, clientY: e.clientY });
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!mouseActive) return;
+      updateTouch({ identifier:'mouse', clientX: e.clientX, clientY: e.clientY });
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (!mouseActive) return;
+      mouseActive = false;
+      endTouch({ identifier:'mouse' });
+    });
+  }
+  setupPointerEvents();
+
+  // Animation loop
+  function animate(){
+    drawSemitoneLines();
+
+    // active touches
+    for (const id in activeTouches){
+      const t = activeTouches[id];
+      drawCircle(t.x, t.y, t.volume, 1);
+    }
+    // fading circles
+    for (let i = fadingCircles.length - 1; i >= 0; i--){
+      const c = fadingCircles[i];
+      drawCircle(c.x, c.y, 1, c.alpha);
+      c.alpha -= 0.06;
+      if (c.alpha <= 0) fadingCircles.splice(i,1);
+    }
+
+    requestAnimationFrame(animate);
+  }
+  animate();
+
+  // ===== UI wiring =====
+  octaveSelect.addEventListener('change', (e) => {
+    numOctaves = parseInt(e.target.value, 10) || 2;
+    drawSemitoneLines();
+  });
+
+  waveformSelect.addEventListener('change', (e) => {
+    currentWaveform = e.target.value;
+    // update existing oscillators' type so live change affects them
+    for (const id in activeTouches) {
+      try { activeTouches[id].osc.type = currentWaveform; } catch(_) {}
+    }
+  });
+
+  // toggle stepped mode (only relevant for chromatic; when key selected we force stepped)
+  stepToggle.addEventListener('click', () => {
+    if (currentScale !== 'chromatic') return; // disabled by key selection
+    isSteppedMode = !isSteppedMode;
+    stepToggle.textContent = isSteppedMode ? 'Step' : 'Con';
+  });
+
+  layoutToggle.addEventListener('click', () => {
+    isGridLayout = !isGridLayout;
+    layoutToggle.textContent = isGridLayout ? 'Grid' : 'Linear';
+    drawSemitoneLines();
+  });
+
+  keySelect.addEventListener('change', (e) => {
+    currentScale = e.target.value;
+    if (currentScale === 'chromatic') {
+      // reset base to C4
+      baseFreq = C4;
+      // re-enable step toggle
+      stepToggle.disabled = false;
+      stepToggle.style.opacity = '1';
+      // keep stepped state as before (do not force)
+    } else {
+      // parse root and type (e.g. "D minor")
+      const [root, typeWord] = currentScale.split(' ');
+      const rootNote = root;
+      const type = (typeWord || 'major').toLowerCase();
+
+      // shift baseFreq so the scale begins at the root note relative to C4
+      const rootIndex = noteNames.indexOf(rootNote);
+      if (rootIndex >= 0) {
+        baseFreq = C4 * Math.pow(2, rootIndex / 12);
+      } else {
+        baseFreq = C4;
+      }
+
+      // Force stepped and disable toggle
+      isSteppedMode = true;
+      stepToggle.disabled = true;
+      stepToggle.style.opacity = '0.5';
+      stepToggle.textContent = 'Step';
+    }
+
+    // redraw lines after base change or scale change
+    drawSemitoneLines();
+  });
+
+  // disable step toggle pointer when key selected (initially chromatic)
+  function refreshStepToggleUI(){
+    if (currentScale === 'chromatic'){
+      stepToggle.disabled = false;
+      stepToggle.style.opacity = '1';
+      stepToggle.textContent = isSteppedMode ? 'Step' : 'Con';
+    } else {
+      stepToggle.disabled = true;
+      stepToggle.style.opacity = '0.5';
+      stepToggle.textContent = 'Step';
+    }
+  }
+  // call whenever relevant:
+  keySelect.addEventListener('change', refreshStepToggleUI);
+  octaveSelect.addEventListener('change', refreshStepToggleUI);
+  refreshStepToggleUI();
+
+  // initial draw
+  drawSemitoneLines();
+
+  // Expose some debug presets if you want
+  window.__setWave = (w) => { waveformSelect.value = w; waveformSelect.dispatchEvent(new Event('change')); };
+});
+</script>
+</body>
+</html>
